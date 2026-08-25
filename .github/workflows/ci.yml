@@ -5,9 +5,9 @@ permissions:
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "v2.1" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "v2.1" ]
 
 jobs:
   check:
