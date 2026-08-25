@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ func main() {
 	wrapMode := flag.Bool("wrap", false, "WRAP mode: SRTP-like AEAD obfuscation for DTLS packets before they reach TURN ChannelData")
 	wrapKeyHex := flag.String("wrap-key", "", "32-byte hex-encoded shared key for -wrap (64 hex chars)")
 	genWrapKey := flag.Bool("gen-wrap-key", false, "print a fresh 64-character hex key for -wrap-key and exit")
+	drainTimeout := flag.Duration("drain-timeout", 30*time.Second, "maximum time to let established sessions finish after SIGTERM")
 	debugFlag := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
 	isDebug = *debugFlag
@@ -52,17 +54,14 @@ func main() {
 		return
 	}
 
+	if *drainTimeout < 0 {
+		log.Panicf("-drain-timeout must not be negative")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	signalChan := make(chan os.Signal, 1)
+	signalChan := make(chan os.Signal, 2)
 	signal.Notify(signalChan, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-signalChan
-		log.Printf("Terminating...\n")
-		cancel()
-		<-signalChan
-		log.Fatalf("Exit...\n")
-	}()
+	defer signal.Stop(signalChan)
 
 	addr, err := net.ResolveUDPAddr("udp", *listen)
 	if err != nil {
@@ -119,63 +118,96 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	context.AfterFunc(ctx, func() {
-		if err = listener.Close(); err != nil {
-			panic(err)
-		}
-	})
-
 	fmt.Println("Listening")
 
-	wg1 := sync.WaitGroup{}
-	for {
-		select {
-		case <-ctx.Done():
-			wg1.Wait()
-			return
-		default:
-		}
-		// Wait for a connection.
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		wg1.Add(1)
-		go func(conn net.Conn) {
-			defer wg1.Done()
-			defer func() {
-				if closeErr := conn.Close(); closeErr != nil {
-					log.Printf("failed to close incoming connection: %s", closeErr)
+	gate := connectionGate{}
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			// Keep the packet listener alive while draining: Pion's accepted DTLS
+			// connections share it. New handshakes are accepted only far enough to
+			// close them, while established sessions retain their transport.
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				if ctx.Err() == nil {
+					log.Printf("Accept failed: %v", acceptErr)
 				}
-			}()
-			debugf("Connection from %s\n", conn.RemoteAddr())
-
-			// Perform the handshake with a 30-second timeout
-			ctx1, cancel1 := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel1()
-
-			dtlsConn, ok := conn.(*dtls.Conn)
-			if !ok {
-				log.Println("Type error: expected *dtls.Conn")
 				return
 			}
-			debugf("Start handshake")
-			if err := dtlsConn.HandshakeContext(ctx1); err != nil {
-				log.Printf("Handshake failed: %v", err)
-				return
+			if !gate.admit() {
+				_ = conn.Close()
+				continue
 			}
-			debugf("Handshake done")
+			go func(conn net.Conn) {
+				defer gate.done()
+				defer func() {
+					if closeErr := conn.Close(); closeErr != nil {
+						log.Printf("failed to close incoming connection: %s", closeErr)
+					}
+				}()
+				debugf("Connection from %s\n", conn.RemoteAddr())
 
-			if *vlessMode {
-				handleVLESSConnection(ctx, dtlsConn, *connect, *vlessBond)
-			} else {
-				handleUDPConnection(ctx, conn, *connect)
-			}
+				// Perform the handshake with a 30-second timeout
+				ctx1, cancel1 := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel1()
 
-			debugf("Connection closed: %s\n", conn.RemoteAddr())
-		}(conn)
+				dtlsConn, ok := conn.(*dtls.Conn)
+				if !ok {
+					log.Println("Type error: expected *dtls.Conn")
+					return
+				}
+				debugf("Start handshake")
+				if err := dtlsConn.HandshakeContext(ctx1); err != nil {
+					log.Printf("Handshake failed: %v", err)
+					return
+				}
+				debugf("Handshake done")
+
+				if *vlessMode {
+					handleVLESSConnection(ctx, dtlsConn, *connect, *vlessBond)
+				} else {
+					handleUDPConnection(ctx, conn, *connect)
+				}
+
+				debugf("Connection closed: %s\n", conn.RemoteAddr())
+			}(conn)
+		}
+	}()
+
+	<-signalChan
+	active := gate.beginDrain()
+	log.Printf("Draining: refusing new sessions and waiting up to %s for %d active session(s)", drainTimeout.String(), active)
+
+	drained := make(chan struct{})
+	go func() {
+		gate.wait()
+		close(drained)
+	}()
+
+	timer := time.NewTimer(*drainTimeout)
+	defer timer.Stop()
+	select {
+	case <-drained:
+		log.Printf("Drain complete")
+	case <-timer.C:
+		log.Printf("Drain timeout reached with %d active session(s); forcing shutdown", gate.activeCount())
+	case <-signalChan:
+		log.Printf("Second termination signal received; forcing shutdown")
 	}
+
+	// Cancelling the lifetime context releases established handlers. Closing the
+	// listener afterwards unblocks Accept without truncating the drain window.
+	cancel()
+	if closeErr := listener.Close(); closeErr != nil && !isClosedNetworkError(closeErr) {
+		log.Printf("Listener close failed: %v", closeErr)
+	}
+	gate.wait()
+	<-acceptDone
+}
+
+func isClosedNetworkError(err error) bool {
+	return err == nil || err == net.ErrClosed || (err != nil && errors.Is(err, net.ErrClosed))
 }
 
 type throughputStats struct {
