@@ -111,7 +111,10 @@ var udpSessionPacketPool = sync.Pool{
 }
 
 func acquireUDPSessionPacket(payload []byte) *udpSessionPacket {
-	packet := udpSessionPacketPool.Get().(*udpSessionPacket)
+	packet, ok := udpSessionPacketPool.Get().(*udpSessionPacket)
+	if !ok {
+		packet = &udpSessionPacket{buf: make([]byte, udpSessionPacketSize)}
+	}
 	if cap(packet.buf) < len(payload) {
 		packet.buf = make([]byte, len(payload))
 	}
@@ -154,7 +157,9 @@ func (l *udpSessionLane) stop() {
 		return
 	}
 	l.cancel()
-	_ = l.conn.SetDeadline(time.Now())
+	if err := l.conn.SetDeadline(time.Now()); err != nil {
+		debugf("failed to unblock UDP session lane %d: %v", l.streamID, err)
+	}
 }
 
 type udpLaneSelector struct {
@@ -313,7 +318,9 @@ func (s *aggregatedUDPSession) removeLane(lane *udpSessionLane) {
 func (s *aggregatedUDPSession) close() {
 	s.closeOnce.Do(func() {
 		s.cancel()
-		_ = s.backend.SetDeadline(time.Now())
+		if err := s.backend.SetDeadline(time.Now()); err != nil {
+			debugf("[udp-session %s] failed to unblock backend: %v", s.shortID(), err)
+		}
 		_ = s.backend.Close()
 		s.mu.Lock()
 		for _, lane := range s.lanes {

@@ -207,7 +207,7 @@ func main() {
 }
 
 func isClosedNetworkError(err error) bool {
-	return err == nil || err == net.ErrClosed || (err != nil && errors.Is(err, net.ErrClosed))
+	return err == nil || err == net.ErrClosed || errors.Is(err, net.ErrClosed)
 }
 
 type throughputStats struct {
@@ -824,8 +824,8 @@ func handleLegacyUDPConnection(ctx context.Context, conn net.Conn, connectAddr s
 				packet = pending
 				pending = nil
 			} else {
-				if err1 := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
-					log.Printf("Failed: %s", err1)
+				if deadlineErr := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); deadlineErr != nil {
+					log.Printf("Failed: %s", deadlineErr)
 					return
 				}
 				var n int

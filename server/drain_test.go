@@ -7,8 +7,10 @@ import (
 
 func TestConnectionGateStopsAdmissionBeforeWait(t *testing.T) {
 	var gate connectionGate
-	if !gate.admit() || !gate.admit() {
-		t.Fatal("gate refused a session before drain")
+	for i := 0; i < 2; i++ {
+		if !gate.admit() {
+			t.Fatalf("gate refused session %d before drain", i+1)
+		}
 	}
 	if active := gate.beginDrain(); active != 2 {
 		t.Fatalf("active at drain = %d, want 2", active)
