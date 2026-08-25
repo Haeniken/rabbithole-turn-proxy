@@ -769,6 +769,21 @@ func handleUDPConnection(ctx context.Context, conn net.Conn, connectAddr string)
 				return
 			}
 
+			// Probe packets are echoed on the same DTLS connection and never
+			// reach WireGuard. Existing clients and all ordinary packets follow
+			// the unchanged forwarding path below.
+			if _, probe := parseProbePacket(buf[:n]); probe {
+				if err1 = conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err1 != nil {
+					log.Printf("Probe deadline failed: %s", err1)
+					return
+				}
+				if _, err1 = conn.Write(buf[:n]); err1 != nil {
+					log.Printf("Probe echo failed: %s", err1)
+					return
+				}
+				continue
+			}
+
 			if err1 = serverConn.SetWriteDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
 				log.Printf("Failed: %s", err1)
 				return
