@@ -82,6 +82,8 @@ WireGuard client -> 127.0.0.1:9000 -> Rabbit Hole TURN Proxy client
 - Агрегация Android TURN-потоков в одну UDP-сессию WireGuard без изменения протокола iPhone.
 - Flowlet/stripe-планирование нисходящего трафика для клиентов с reorder-буфером.
 - Graceful drain установленных сессий при `SIGTERM`.
+- Prometheus-метрики, readiness/health endpoints и мягкий admission control.
+- Изолированный canary-режим с отдельным лимитом новых сессий.
 - Автоматическое и ручное прохождение VK captcha.
 - Docker-образ для серверной части.
 
@@ -251,6 +253,14 @@ docker run --rm --network host \
 | `WRAP_MODE` | `false` | включает `-wrap` |
 | `WRAP_KEY` | пусто | ключ для `-wrap-key` |
 | `DRAIN_TIMEOUT` | `30s` | сколько ждать завершения активных сессий после `SIGTERM` |
+| `METRICS_LISTEN` | `127.0.0.1:9090` | адрес HTTP endpoints `/healthz`, `/readyz`, `/metrics`; пустое значение отключает listener |
+| `INSTANCE_NAME` | `default` | метка экземпляра в метриках |
+| `MAX_SESSIONS` | `2048` | мягкий предел одновременно принятых DTLS-сессий; `0` отключает проверку |
+| `MAX_HANDSHAKES` | `128` | предел одновременно выполняемых DTLS handshakes |
+| `MAX_GOROUTINES` | `20000` | отказ новым сессиям при достижении числа goroutine |
+| `MIN_FREE_FDS` | `128` | резерв файловых дескрипторов, недоступный новым сессиям |
+| `CANARY_MODE` | `false` | помечает отдельный listener как canary |
+| `CANARY_MAX_SESSIONS` | `64` | дополнительный предел сессий для canary |
 | `VK_TURN_KCP_PROFILE` | `balanced` | профиль KCP (`fast`, `balanced`, `slow`) |
 | `VK_TURN_KCP_MTU` | `1200` | переопределить MTU для KCP |
 
@@ -262,6 +272,50 @@ docker run --rm -p 56000:56000/udp \
   -e DRAIN_TIMEOUT=30s \
   rabbithole-turn-proxy
 ```
+
+## Наблюдаемость и защита от перегрузки
+
+HTTP listener по умолчанию доступен только локально на
+`127.0.0.1:9090`:
+
+```bash
+curl -fsS http://127.0.0.1:9090/healthz
+curl -fsS http://127.0.0.1:9090/readyz
+curl -fsS http://127.0.0.1:9090/metrics
+```
+
+`/healthz` показывает, что процесс жив. `/readyz` возвращает `503`, когда
+сервер находится в drain или временно не принимает новые сессии из-за
+лимита сессий, handshakes, goroutine либо файловых дескрипторов. Существующие
+соединения при этом продолжают работать.
+
+Метрики включают число активных и установленных сессий, handshakes,
+goroutine, открытых FD, размеры агрегированных очередей, потери при заполнении
+очередей, backend-ошибки и результат graceful drain. Listener не следует
+публиковать в Интернет без отдельной аутентификации или сетевого ACL.
+
+## Canary-деплой
+
+Canary запускается отдельным процессом или контейнером на другом UDP-порту.
+Нельзя включать случайный canary внутри основного listener: после принятия
+UDP/DTLS-сессии её невозможно безопасно передать стабильному процессу.
+
+Пример отдельного экземпляра:
+
+```bash
+docker run --rm --network host \
+  -e CONNECT_ADDR=127.0.0.1:51820 \
+  -e LISTEN_ADDR=0.0.0.0:56001 \
+  -e METRICS_LISTEN=127.0.0.1:9091 \
+  -e INSTANCE_NAME=canary \
+  -e CANARY_MODE=true \
+  -e CANARY_MAX_SESSIONS=32 \
+  rabbithole-turn-proxy
+```
+
+На canary-порт направляют только заранее выбранные тестовые конфигурации.
+После проверки `/readyz`, ошибок backend, очередей, потерь и ресурсов тот же
+образ последовательно применяется к стабильным экземплярам с graceful drain.
 
 ## VLESS / Xray
 
@@ -368,6 +422,14 @@ docker run --rm -p 56000:56000/udp \
 | `-wrap-key` | пусто | 32-байтный ключ в hex, 64 символа |
 | `-gen-wrap-key` | `false` | напечатать новый WRAP-ключ и выйти |
 | `-drain-timeout` | `30s` | максимальное ожидание завершения активных сессий после `SIGTERM`; `0` завершает сразу |
+| `-metrics-listen` | `127.0.0.1:9090` | HTTP endpoints наблюдаемости; пустое значение отключает listener |
+| `-instance-name` | `default` | метка экземпляра в метриках |
+| `-max-sessions` | `2048` | мягкий предел активных DTLS-сессий |
+| `-max-handshakes` | `128` | предел одновременных DTLS handshakes |
+| `-max-goroutines` | `20000` | предел goroutine для допуска новых сессий |
+| `-min-free-fds` | `128` | резерв свободных файловых дескрипторов |
+| `-canary` | `false` | пометить отдельный listener как canary |
+| `-canary-max-sessions` | `64` | дополнительный предел сессий canary |
 | `-debug` | `false` | подробные логи |
 
 ## Captcha
