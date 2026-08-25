@@ -21,7 +21,7 @@ Android-клиент: [Haeniken/rabbithole-turn-android](https://github.com/Haen
 
 Исходный Android-клиент: [kiper292/wireguard-turn-android](https://github.com/kiper292/wireguard-turn-android).
 
-iPhone-клиент: [anton48/vk-turn-proxy-ios](https://github.com/anton48/vk-turn-proxy-ios).
+iPhone-клиент: [TestFlight](https://testflight.apple.com/join/ANm6cmDv); [исходный код](https://github.com/anton48/vk-turn-proxy-ios).
 
 ## Содержание
 
