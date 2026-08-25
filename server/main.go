@@ -207,7 +207,7 @@ func main() {
 }
 
 func isClosedNetworkError(err error) bool {
-	return err == nil || err == net.ErrClosed || (err != nil && errors.Is(err, net.ErrClosed))
+	return err == nil || err == net.ErrClosed || errors.Is(err, net.ErrClosed)
 }
 
 type throughputStats struct {
@@ -751,6 +751,32 @@ func (c *prefixedConn) Read(p []byte) (int, error) {
 
 // handleUDPConnection forwards DTLS packets to a UDP backend (WireGuard).
 func handleUDPConnection(ctx context.Context, conn net.Conn, connectAddr string) {
+	first := make([]byte, 1600)
+	if err := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err != nil {
+		log.Printf("Failed: %s", err)
+		return
+	}
+	n, err := conn.Read(first)
+	if err != nil {
+		log.Printf("Failed: %s", err)
+		return
+	}
+	first = first[:n]
+
+	if hello, ok := parseUDPSessionPreface(first); ok {
+		handleAggregatedUDPConnection(ctx, conn, connectAddr, hello)
+		return
+	}
+
+	handleLegacyUDPConnection(ctx, conn, connectAddr, first)
+}
+
+// handleLegacyUDPConnection preserves the original one-DTLS-session to one
+// backend-UDP-socket behavior. Clients that do not send the optional Android
+// session preface (including the existing iPhone client and proxy_v1 clients)
+// stay on this path unchanged. Older proxy_v2 Android clients are recognized
+// by the server but receive pinned, non-striped downlink in session_udp.go.
+func handleLegacyUDPConnection(ctx context.Context, conn net.Conn, connectAddr string, firstPacket []byte) {
 	serverConn, err := net.Dial("udp", connectAddr)
 	if err != nil {
 		log.Println(err)
@@ -785,31 +811,41 @@ func handleUDPConnection(ctx context.Context, conn net.Conn, connectAddr string)
 		defer wg.Done()
 		defer cancel2()
 		buf := make([]byte, 1600)
+		pending := firstPacket
 		for {
 			select {
 			case <-ctx2.Done():
 				return
 			default:
 			}
-			if err1 := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
-			n, err1 := conn.Read(buf)
-			if err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
+			var packet []byte
+			var err1 error
+			if pending != nil {
+				packet = pending
+				pending = nil
+			} else {
+				if deadlineErr := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); deadlineErr != nil {
+					log.Printf("Failed: %s", deadlineErr)
+					return
+				}
+				var n int
+				n, err1 = conn.Read(buf)
+				if err1 != nil {
+					log.Printf("Failed: %s", err1)
+					return
+				}
+				packet = buf[:n]
 			}
 
 			// Probe packets are echoed on the same DTLS connection and never
 			// reach WireGuard. Existing clients and all ordinary packets follow
 			// the unchanged forwarding path below.
-			if _, probe := parseProbePacket(buf[:n]); probe {
+			if _, probe := parseProbePacket(packet); probe {
 				if err1 = conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err1 != nil {
 					log.Printf("Probe deadline failed: %s", err1)
 					return
 				}
-				if _, err1 = conn.Write(buf[:n]); err1 != nil {
+				if _, err1 = conn.Write(packet); err1 != nil {
 					log.Printf("Probe echo failed: %s", err1)
 					return
 				}
@@ -820,7 +856,7 @@ func handleUDPConnection(ctx context.Context, conn net.Conn, connectAddr string)
 				log.Printf("Failed: %s", err1)
 				return
 			}
-			written, err1 := serverConn.Write(buf[:n])
+			written, err1 := serverConn.Write(packet)
 			stats.addTx(written)
 			if err1 != nil {
 				log.Printf("Failed: %s", err1)

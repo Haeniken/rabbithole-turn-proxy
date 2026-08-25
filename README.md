@@ -1,13 +1,32 @@
-# VK TURN Proxy
-
-VK TURN Proxy - клиент и сервер для прокидывания локального UDP/TCP-трафика через TURN-реле, получаемые из ссылки на VK Calls. Типичный сценарий - поднять небольшой `server` на VPS рядом с WireGuard или Xray, а на клиентском устройстве запустить `client`, который слушает локальный адрес вроде `127.0.0.1:9000`.
+# Rabbit Hole TURN Proxy
 
 > [!CAUTION]
-> Проект предназначен для обучения, исследований и администрирования собственных стендов. Используйте его только там, где у вас есть право запускать такой трафик и менять сетевую конфигурацию.
+> **Назначение проекта — исследование, тестирование и администрирование разрешённой инфраструктуры.** Используйте проект только с сетями, системами, учётными записями и трафиком, которые принадлежат вам либо на работу с которыми владелец заранее дал явное разрешение.
+
+## Правомерное использование, ограничения и ответственность
+
+Проект представляет собой исходный код общего назначения и не предназначен для неправомерного доступа к компьютерной информации, вмешательства в работу чужих систем, перехвата или изменения чужого трафика, использования чужих учётных данных либо получения доступа к ресурсам без законного основания. Не используйте проект для распространения запрещённой информации или оказания услуг третьим лицам без необходимых прав, разрешений и соблюдения обязательных требований.
+
+До использования, изменения или распространения проекта пользователь обязан самостоятельно проверить законность конкретного сценария, наличие необходимых полномочий, а также соблюдение применимого законодательства, прав владельцев инфраструктуры и условий сторонних платформ. Если законность или объём разрешения неочевидны, использование следует прекратить до получения индивидуальной юридической консультации.
+
+В пределах, допускаемых применимым законодательством, программное обеспечение предоставляется «как есть», без гарантий пригодности для конкретной цели, бесперебойной работы или сохранности данных. Никакое положение этого раздела не исключает и не ограничивает ответственность в случаях, когда такое исключение или ограничение запрещено законом.
+
+Работа сторонних TURN-сервисов, API и сетей не гарантируется: их протоколы, ограничения и доступность могут измениться без предупреждения.
+
+Rabbit Hole TURN Proxy — серверный форк VK TURN Proxy для передачи локального UDP/TCP-трафика через TURN-реле, получаемых из ссылки на VK Calls. Существующие клиенты iPhone продолжают работать по исходному протоколу.
+
+Проект основан на [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy) и сохраняет совместимость с [оригинальным vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy).
+
+Android-клиент: [Haeniken/rabbithole-turn-android](https://github.com/Haeniken/rabbithole-turn-android).
+
+Исходный Android-клиент: [kiper292/wireguard-turn-android](https://github.com/kiper292/wireguard-turn-android).
+
+iPhone-клиент: [anton48/vk-turn-proxy-ios](https://github.com/anton48/vk-turn-proxy-ios).
 
 ## Содержание
 
 - [Как это работает](#как-это-работает)
+- [Совместимость и агрегация UDP-сессий](#совместимость-и-агрегация-udp-сессий)
 - [Возможности](#возможности)
 - [Что нужно](#что-нужно)
 - [Быстрый старт: WireGuard](#быстрый-старт-wireguard)
@@ -29,17 +48,27 @@ VK TURN Proxy - клиент и сервер для прокидывания л�
 - [Похожие проекты](#похожие-проекты)
 - [Лицензия](#лицензия)
 
-## Как Это Работает
+## Как это работает
 
 Схема для WireGuard:
 
 ```text
-WireGuard client -> 127.0.0.1:9000 -> VK TURN Proxy client
-  -> VK TURN relay -> VK TURN Proxy server на VPS
+WireGuard client -> 127.0.0.1:9000 -> Rabbit Hole TURN Proxy client
+  -> VK TURN relay -> Rabbit Hole TURN Proxy server на VPS
   -> 127.0.0.1:<порт WireGuard> -> WireGuard server
 ```
 
-Клиент берет временные TURN-учетные данные из ссылки VK Calls, открывает одно или несколько соединений к TURN-реле и отправляет через них трафик к вашему `server`. Между `client` и `server` используется DTLS. Для WireGuard сервер пересылает данные в UDP backend, для VLESS/Xray - в TCP backend через KCP и smux.
+Клиент берет временные TURN-учетные данные из ссылки VK Calls, открывает одно или несколько соединений к TURN-реле и отправляет через них трафик к вашему `server`. Между `client` и `server` используется DTLS. Для WireGuard сервер пересылает данные в UDP backend, для VLESS/Xray — в TCP backend через KCP и smux.
+
+## Совместимость и агрегация UDP-сессий
+
+В режиме `proxy_v2` Android отправляет перед обычными пакетами 17-байтовый префикс: UUID сессии и номер TURN-потока. Сервер объединяет такие потоки в один UDP socket к WireGuard backend. Это устраняет постоянное roaming-переключение endpoint WireGuard между разными backend-сокетами.
+
+- Новый Android-клиент выставляет capability-флаг поддержки bounded reorder-буфера. Сервер выдаёт нисходящий трафик короткими стабильными полосами и меняет линию на границе flowlet либо при очереди на текущей линии.
+- Старый Android-клиент с тем же 17-байтовым префиксом также получает единый backend socket, но нисходящий трафик закрепляется за одной линией и не полосуется.
+- iPhone и `proxy_v1` не отправляют префикс и обслуживаются прежним способом: одна DTLS-сессия — один UDP socket к backend.
+
+Новый формат не меняет DTLS, WRAP, WireGuard-пакеты или получение TURN credentials. Обновлять iPhone-клиент не требуется.
 
 ## Возможности
 
@@ -50,10 +79,13 @@ WireGuard client -> 127.0.0.1:9000 -> VK TURN Proxy client
 - VLESS/Xray TCP backend через `-vless`.
 - Bonding для VLESS через `-vless-bond`.
 - Дополнительная WRAP-обфускация DTLS-пакетов через `-wrap`.
+- Агрегация Android TURN-потоков в одну UDP-сессию WireGuard без изменения протокола iPhone.
+- Flowlet/stripe-планирование нисходящего трафика для клиентов с reorder-буфером.
+- Graceful drain установленных сессий при `SIGTERM`.
 - Автоматическое и ручное прохождение VK captcha.
 - Docker-образ для серверной части.
 
-## Что Нужно
+## Что нужно
 
 - VPS с публичным IP.
 - На VPS уже должен слушать backend:
@@ -64,15 +96,16 @@ WireGuard client -> 127.0.0.1:9000 -> VK TURN Proxy client
 
 Ссылку VK Calls лучше создать самостоятельно. Не завершайте звонок для всех, если хотите использовать эту ссылку дальше.
 
-## Быстрый Старт: WireGuard
+## Быстрый старт: WireGuard
 
-### 1. Запустите Сервер На VPS
+### 1. Запустите сервер на VPS
 
-Скачайте бинарник для Linux amd64:
+Соберите актуальный сервер для Linux amd64:
 
 ```bash
-curl -L -o server https://github.com/cacggghp/vk-turn-proxy/releases/latest/download/server-linux-amd64
-chmod +x server
+git clone --branch v2.1 https://github.com/Haeniken/rabbithole-turn-proxy.git
+cd rabbithole-turn-proxy
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o server ./server
 ```
 
 Запустите `server`, указав локальный адрес WireGuard:
@@ -83,7 +116,7 @@ chmod +x server
 
 Порт `56000/udp` должен быть доступен снаружи. Если WireGuard слушает другой порт, замените `51820`.
 
-### 2. Настройте WireGuard На Клиенте
+### 2. Настройте WireGuard на клиенте
 
 В клиентском конфиге WireGuard замените endpoint сервера на локальный адрес VK TURN Proxy:
 
@@ -92,9 +125,9 @@ Endpoint = 127.0.0.1:9000
 MTU = 1280
 ```
 
-На Android добавьте Termux или приложение-клиент в исключения WireGuard. На Windows, Linux и macOS перед включением WireGuard нужно добавить маршрут до TURN-реле, иначе клиент может попытаться подключаться к TURN уже через сам VPN.
+На Android добавьте Termux или приложение-клиент в исключения WireGuard. Нативный Android-клиент автоматически использует MTU 1264; значение выше приведено для универсального CLI-примера. На Windows, Linux и macOS перед включением WireGuard нужно добавить маршрут до TURN-реле, иначе клиент может попытаться подключаться к TURN уже через сам туннель.
 
-### 3. Запустите Клиент
+### 3. Запустите клиент
 
 Linux:
 
@@ -123,7 +156,7 @@ chmod +x client
 
 Если вы скачали только бинарник, но не клонировали репозиторий, возьмите нужный route-скрипт из этого репозитория: `routes.sh`, `routes.ps1` или `routes-macos.sh`.
 
-## Android Через Termux
+## Android через Termux
 
 1. Установите Termux из F-Droid.
 2. В WireGuard укажите `Endpoint = 127.0.0.1:9000` и `MTU = 1280`.
@@ -143,7 +176,7 @@ chmod +x client
 termux-wake-unlock
 ```
 
-## iOS Через iSH
+## iOS через iSH
 
 Это запасной вариант, если нет нативного клиента.
 
@@ -161,18 +194,18 @@ GOMAXPROCS=1 GODEBUG=asyncpreemptoff=1 ./client -listen 127.0.0.1:9000 -peer <ip
 cat /dev/location > /dev/null &
 ```
 
-## Сервер Как systemd-Сервис
+## Сервер как systemd-сервис
 
-Пример `/etc/systemd/system/vk-turn-proxy.service`:
+Пример `/etc/systemd/system/rabbithole-turn-proxy.service`:
 
 ```ini
 [Unit]
-Description=VK TURN Proxy server
+Description=Rabbit Hole TURN Proxy server
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/vk-turn-proxy/server -listen 0.0.0.0:56000 -connect 127.0.0.1:51820
+ExecStart=/opt/rabbithole-turn-proxy/server -listen 0.0.0.0:56000 -connect 127.0.0.1:51820
 Restart=always
 RestartSec=5
 User=nobody
@@ -186,16 +219,16 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now vk-turn-proxy.service
-sudo systemctl status vk-turn-proxy.service
+sudo systemctl enable --now rabbithole-turn-proxy.service
+sudo systemctl status rabbithole-turn-proxy.service
 ```
 
 ## Docker
 
-Образ публикуется в GitHub Container Registry:
+Соберите образ из этого репозитория:
 
 ```bash
-docker pull ghcr.io/cacggghp/vk-turn-proxy:latest
+docker build -t rabbithole-turn-proxy .
 ```
 
 Если backend слушает на хосте, удобнее использовать host network:
@@ -203,15 +236,8 @@ docker pull ghcr.io/cacggghp/vk-turn-proxy:latest
 ```bash
 docker run --rm --network host \
   -e CONNECT_ADDR=127.0.0.1:51820 \
-  ghcr.io/cacggghp/vk-turn-proxy:latest
-```
-
-Bridge mode:
-
-```bash
-docker run --rm -p 56000:56000/udp \
-  -e CONNECT_ADDR=<host-ip>:51820 \
-  ghcr.io/cacggghp/vk-turn-proxy:latest
+  -e DRAIN_TIMEOUT=30s \
+  rabbithole-turn-proxy
 ```
 
 Переменные окружения:
@@ -224,18 +250,22 @@ docker run --rm -p 56000:56000/udp \
 | `VLESS_BOND` | `false` | включает `-vless-bond` |
 | `WRAP_MODE` | `false` | включает `-wrap` |
 | `WRAP_KEY` | пусто | ключ для `-wrap-key` |
+| `DRAIN_TIMEOUT` | `30s` | сколько ждать завершения активных сессий после `SIGTERM` |
 | `VK_TURN_KCP_PROFILE` | `balanced` | профиль KCP (`fast`, `balanced`, `slow`) |
 | `VK_TURN_KCP_MTU` | `1200` | переопределить MTU для KCP |
 
-Сборка образа вручную:
+Bridge mode:
 
 ```bash
-docker build -t vk-turn-proxy .
+docker run --rm -p 56000:56000/udp \
+  -e CONNECT_ADDR=<host-ip>:51820 \
+  -e DRAIN_TIMEOUT=30s \
+  rabbithole-turn-proxy
 ```
 
 ## VLESS / Xray
 
-В режиме `-vless` VK TURN Proxy прокидывает TCP-соединения. На VPS `server` подключается к локальному TCP backend, например к Xray inbound на `127.0.0.1:443`. На клиенте `client` слушает локальный TCP адрес, на который должен смотреть ваш Xray/v2rayN/sing-box клиент.
+В режиме `-vless` Rabbit Hole TURN Proxy прокидывает TCP-соединения. На VPS `server` подключается к локальному TCP backend, например к Xray inbound на `127.0.0.1:443`. На клиенте `client` слушает локальный TCP адрес, на который должен смотреть ваш Xray/v2rayN/sing-box клиент.
 
 Сервер:
 
@@ -258,7 +288,7 @@ docker build -t vk-turn-proxy .
 
 ## WRAP-Режим
 
-`-wrap` дополнительно оборачивает DTLS-пакеты ChaCha20-XOR перед отправкой в TURN ChannelData. Ключ должен совпадать на клиенте и сервере.
+`-wrap` дополнительно оборачивает DTLS-пакеты в SRTP-подобный контейнер с ChaCha20-Poly1305 AEAD перед отправкой в TURN ChannelData. Ключ должен совпадать на клиенте и сервере.
 
 Сгенерировать ключ:
 
@@ -300,12 +330,12 @@ docker build -t vk-turn-proxy .
 ./client -udp -turn 5.255.211.241 -listen 127.0.0.1:9000 -peer <ip-vps>:56000 -yandex-link "<telemost-link>"
 ```
 
-## Флаги Клиента
+## Флаги клиента
 
 | Флаг | По умолчанию | Описание |
 | --- | --- | --- |
 | `-listen` | `127.0.0.1:9000` | локальный адрес для WireGuard или Xray клиента |
-| `-peer` | обязательный | адрес VK TURN Proxy server на VPS, например `<ip-vps>:56000` |
+| `-peer` | обязательный | адрес Rabbit Hole TURN Proxy server на VPS, например `<ip-vps>:56000` |
 | `-vk-link` | пусто | ссылка VK Calls |
 | `-yandex-link` | пусто | ссылка Яндекс Телемоста, legacy-режим |
 | `-n` | VK: `10`, Yandex: `1` | количество TURN-соединений |
@@ -326,7 +356,7 @@ docker build -t vk-turn-proxy .
 
 Нужно указать ровно одну ссылку: `-vk-link` или `-yandex-link`.
 
-## Флаги Сервера
+## Флаги сервера
 
 | Флаг | По умолчанию | Описание |
 | --- | --- | --- |
@@ -337,6 +367,7 @@ docker build -t vk-turn-proxy .
 | `-wrap` | `false` | включить WRAP-обфускацию |
 | `-wrap-key` | пусто | 32-байтный ключ в hex, 64 символа |
 | `-gen-wrap-key` | `false` | напечатать новый WRAP-ключ и выйти |
+| `-drain-timeout` | `30s` | максимальное ожидание завершения активных сессий после `SIGTERM`; `0` завершает сразу |
 | `-debug` | `false` | подробные логи |
 
 ## Captcha
@@ -349,7 +380,7 @@ docker build -t vk-turn-proxy .
 
 Профиль браузера сохраняется в `vk_profile.json` рядом с бинарником и может помочь последующим запросам выглядеть последовательнее.
 
-## Сборка Из Исходников
+## Сборка из исходников
 
 Нужен Go 1.25.x.
 
@@ -366,9 +397,9 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ser
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o client-linux-amd64 ./client
 ```
 
-## Решение Проблем
+## Решение проблем
 
-- Сначала запускайте VK TURN Proxy client, потом включайте WireGuard.
+- Сначала запускайте Rabbit Hole TURN Proxy client, потом включайте WireGuard.
 - Если WireGuard забирает весь трафик, добавьте маршрут до IP TURN-реле через `routes.sh`, `routes.ps1` или `routes-macos.sh`.
 - Если TCP до TURN не работает, попробуйте `-udp`.
 - Если соединение нестабильное, попробуйте уменьшить `-n`, например `-n 1`.

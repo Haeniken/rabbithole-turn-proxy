@@ -3,6 +3,7 @@ set -e
 
 CONNECT="${CONNECT_ADDR:?CONNECT_ADDR is required}"
 LISTEN="${LISTEN_ADDR:-0.0.0.0:56000}"
+DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-30s}"
 
 VLESS_FLAG=""
 if [ "${VLESS_MODE}" = "true" ]; then
@@ -22,4 +23,4 @@ if [ "${WRAP_MODE}" = "true" ]; then
     WRAP_KEY_FLAG="-wrap-key $WRAP"
 fi
 
-exec ./vk-turn-proxy -listen "$LISTEN" -connect "$CONNECT" $VLESS_FLAG $BOND_FLAG $WRAP_FLAG $WRAP_KEY_FLAG
+exec ./vk-turn-proxy -listen "$LISTEN" -connect "$CONNECT" -drain-timeout "$DRAIN_TIMEOUT" $VLESS_FLAG $BOND_FLAG $WRAP_FLAG $WRAP_KEY_FLAG
