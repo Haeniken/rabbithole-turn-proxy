@@ -184,7 +184,9 @@ func newObservabilityMux(
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("ok\n"))
+		if _, writeErr := w.Write([]byte("ok\n")); writeErr != nil {
+			debugf("health response write failed: %v", writeErr)
+		}
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		ready, reason := gate.readiness()

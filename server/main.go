@@ -105,8 +105,8 @@ func main() {
 		canary:            *canary,
 		canaryMaxSessions: *canaryMaxSessions,
 	}, resources, serverStats)
-	if err := startObservabilityServer(ctx, *metricsListen, *instanceName, role, serverStats, gate, resources); err != nil {
-		log.Panicf("observability listener: %v", err)
+	if observabilityErr := startObservabilityServer(ctx, *metricsListen, *instanceName, role, serverStats, gate, resources); observabilityErr != nil {
+		log.Panicf("observability listener: %v", observabilityErr)
 	}
 	log.Printf("Starting server listen=%s connect=%s vless=%t vless-bond=%t wrap=%t bond-autodetect=true role=%s max-sessions=%d max-handshakes=%d", *listen, *connect, *vlessMode, *vlessBond, *wrapMode, role, admissionConfig{maxSessions: *maxSessions, canary: *canary, canaryMaxSessions: *canaryMaxSessions}.effectiveMaxSessions(), *maxHandshakes)
 	// Generate a certificate and private key to secure the connection
