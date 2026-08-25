@@ -59,11 +59,32 @@ type udpSessionRegistry struct {
 	sessions map[udpSessionKey]*aggregatedUDPSession
 }
 
+type udpRegistryStats struct {
+	sessions int
+	lanes    int
+	queued   int
+}
+
 func newUDPSessionRegistry() *udpSessionRegistry {
 	return &udpSessionRegistry{sessions: make(map[udpSessionKey]*aggregatedUDPSession)}
 }
 
 var sharedUDPSessions = newUDPSessionRegistry()
+
+func (r *udpSessionRegistry) stats() udpRegistryStats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stats := udpRegistryStats{sessions: len(r.sessions)}
+	for _, session := range r.sessions {
+		session.mu.Lock()
+		stats.lanes += len(session.lanes)
+		for _, lane := range session.lanes {
+			stats.queued += len(lane.out)
+		}
+		session.mu.Unlock()
+	}
+	return stats
+}
 
 func (r *udpSessionRegistry) getOrCreate(ctx context.Context, hello udpSessionHello, connectAddr string) (*aggregatedUDPSession, error) {
 	key := udpSessionKey{id: hello.id, connectAddr: connectAddr}
@@ -75,6 +96,7 @@ func (r *udpSessionRegistry) getOrCreate(ctx context.Context, hello udpSessionHe
 
 	backend, err := net.Dial("udp", connectAddr)
 	if err != nil {
+		serverStats.recordBackendError("dial")
 		return nil, err
 	}
 	sessionCtx, cancel := context.WithCancel(ctx)
@@ -385,11 +407,15 @@ func (s *aggregatedUDPSession) readBackend() {
 		n, err := s.backend.Read(buf)
 		if err != nil {
 			if s.ctx.Err() == nil {
+				serverStats.recordBackendError("read")
 				log.Printf("[udp-session %s] backend read error: %v", s.shortID(), err)
 			}
 			return
 		}
-		s.enqueueDownlink(buf[:n], time.Now())
+		serverStats.packetsFromBackend.Add(1)
+		if !s.enqueueDownlink(buf[:n], time.Now()) {
+			serverStats.udpDownlinkDrops.Add(1)
+		}
 	}
 }
 
@@ -458,10 +484,12 @@ func handleAggregatedUDPConnection(ctx context.Context, conn net.Conn, connectAd
 		}
 		if writeErr := session.writeBackend(packet); writeErr != nil {
 			if session.ctx.Err() == nil {
+				serverStats.recordBackendError("write")
 				log.Printf("[udp-session %s] backend write error: %v", session.shortID(), writeErr)
 			}
 			return
 		}
+		serverStats.packetsToBackend.Add(1)
 	}
 }
 

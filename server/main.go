@@ -41,6 +41,14 @@ func main() {
 	wrapKeyHex := flag.String("wrap-key", "", "32-byte hex-encoded shared key for -wrap (64 hex chars)")
 	genWrapKey := flag.Bool("gen-wrap-key", false, "print a fresh 64-character hex key for -wrap-key and exit")
 	drainTimeout := flag.Duration("drain-timeout", 30*time.Second, "maximum time to let established sessions finish after SIGTERM")
+	metricsListen := flag.String("metrics-listen", "127.0.0.1:9090", "HTTP listen address for /healthz, /readyz and /metrics; empty disables")
+	instanceName := flag.String("instance-name", "default", "instance label exposed by metrics")
+	maxSessions := flag.Int64("max-sessions", 2048, "soft limit for admitted DTLS sessions; 0 disables")
+	maxHandshakes := flag.Int64("max-handshakes", 128, "soft limit for concurrent DTLS handshakes; 0 disables")
+	maxGoroutines := flag.Int("max-goroutines", 20000, "refuse new sessions above this goroutine count; 0 disables")
+	minFreeFDs := flag.Int64("min-free-fds", 128, "minimum file descriptors reserved from new sessions; 0 disables")
+	canary := flag.Bool("canary", false, "mark this isolated listener as a canary instance")
+	canaryMaxSessions := flag.Int64("canary-max-sessions", 64, "additional active-session ceiling for a canary instance")
 	debugFlag := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
 	isDebug = *debugFlag
@@ -54,8 +62,8 @@ func main() {
 		return
 	}
 
-	if *drainTimeout < 0 {
-		log.Panicf("-drain-timeout must not be negative")
+	if *drainTimeout < 0 || *maxSessions < 0 || *maxHandshakes < 0 || *maxGoroutines < 0 || *minFreeFDs < 0 || *canaryMaxSessions < 0 {
+		log.Panicf("timeouts and admission limits must not be negative")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -83,7 +91,24 @@ func main() {
 			log.Panicf("-wrap-key must decode to %d bytes (got %d)", wrapKeyLen, len(wrapKey))
 		}
 	}
-	log.Printf("Starting server listen=%s connect=%s vless=%t vless-bond=%t wrap=%t bond-autodetect=true", *listen, *connect, *vlessMode, *vlessBond, *wrapMode)
+	role := "stable"
+	if *canary {
+		role = "canary"
+	}
+	resources := newResourceMonitor()
+	go resources.run(ctx)
+	gate := newConnectionGate(admissionConfig{
+		maxSessions:       *maxSessions,
+		maxHandshakes:     *maxHandshakes,
+		maxGoroutines:     *maxGoroutines,
+		minFreeFDs:        *minFreeFDs,
+		canary:            *canary,
+		canaryMaxSessions: *canaryMaxSessions,
+	}, resources, serverStats)
+	if err := startObservabilityServer(ctx, *metricsListen, *instanceName, role, serverStats, gate, resources); err != nil {
+		log.Panicf("observability listener: %v", err)
+	}
+	log.Printf("Starting server listen=%s connect=%s vless=%t vless-bond=%t wrap=%t bond-autodetect=true role=%s max-sessions=%d max-handshakes=%d", *listen, *connect, *vlessMode, *vlessBond, *wrapMode, role, admissionConfig{maxSessions: *maxSessions, canary: *canary, canaryMaxSessions: *canaryMaxSessions}.effectiveMaxSessions(), *maxHandshakes)
 	// Generate a certificate and private key to secure the connection
 	certificate, genErr := selfsign.GenerateSelfSigned()
 	if genErr != nil {
@@ -120,7 +145,6 @@ func main() {
 	}
 	fmt.Println("Listening")
 
-	gate := connectionGate{}
 	acceptDone := make(chan struct{})
 	go func() {
 		defer close(acceptDone)
@@ -135,12 +159,14 @@ func main() {
 				}
 				return
 			}
-			if !gate.admit() {
+			lease, reason := gate.admit()
+			if lease == nil {
+				debugf("Admission rejected for %s: %s", conn.RemoteAddr(), reason)
 				_ = conn.Close()
 				continue
 			}
 			go func(conn net.Conn) {
-				defer gate.done()
+				defer lease.done()
 				defer func() {
 					if closeErr := conn.Close(); closeErr != nil {
 						log.Printf("failed to close incoming connection: %s", closeErr)
@@ -159,9 +185,11 @@ func main() {
 				}
 				debugf("Start handshake")
 				if err := dtlsConn.HandshakeContext(ctx1); err != nil {
+					serverStats.handshakeFailures.Add(1)
 					log.Printf("Handshake failed: %v", err)
 					return
 				}
+				lease.markEstablished()
 				debugf("Handshake done")
 
 				if *vlessMode {
@@ -187,14 +215,18 @@ func main() {
 
 	timer := time.NewTimer(*drainTimeout)
 	defer timer.Stop()
+	forced := false
 	select {
 	case <-drained:
 		log.Printf("Drain complete")
 	case <-timer.C:
+		forced = true
 		log.Printf("Drain timeout reached with %d active session(s); forcing shutdown", gate.activeCount())
 	case <-signalChan:
+		forced = true
 		log.Printf("Second termination signal received; forcing shutdown")
 	}
+	gate.finishDrain(forced)
 
 	// Cancelling the lifetime context releases established handlers. Closing the
 	// listener afterwards unblocks Accept without truncating the drain window.
@@ -435,7 +467,26 @@ type bondRegistry struct {
 	conns map[uint64]*bondServerConn
 }
 
+type bondRegistryStats struct {
+	sessions int
+	lanes    int
+	queued   int
+}
+
 var globalBondRegistry = &bondRegistry{conns: make(map[uint64]*bondServerConn)}
+
+func (r *bondRegistry) stats() bondRegistryStats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stats := bondRegistryStats{sessions: len(r.conns)}
+	for _, conn := range r.conns {
+		conn.lanesMu.RLock()
+		stats.lanes += len(conn.lanes)
+		stats.queued += len(conn.recvCh)
+		conn.lanesMu.RUnlock()
+	}
+	return stats
+}
 
 func (r *bondRegistry) get(ctx context.Context, id uint64, connectAddr string) *bondServerConn {
 	r.mu.Lock()
@@ -560,6 +611,7 @@ func (c *bondServerConn) run() {
 
 	backendConn, err := net.DialTimeout("tcp", c.connectAddr, 10*time.Second)
 	if err != nil {
+		serverStats.recordBackendError("dial")
 		log.Printf("[bond %d] backend dial error: %s", c.id, err)
 		return
 	}
@@ -632,9 +684,11 @@ func (c *bondServerConn) copyBondToBackend(backendConn net.Conn) {
 				delete(pending, expect)
 				if len(data) > 0 {
 					if _, err := backendConn.Write(data); err != nil {
+						serverStats.recordBackendError("write")
 						log.Printf("[bond %d] backend write error: %v", c.id, err)
 						return
 					}
+					serverStats.packetsToBackend.Add(1)
 				}
 				expect++
 			}
@@ -649,6 +703,7 @@ func (c *bondServerConn) copyBackendToBond(backendConn net.Conn) {
 	for {
 		n, err := backendConn.Read(buf)
 		if n > 0 {
+			serverStats.packetsFromBackend.Add(1)
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			if writeErr := c.writeToNextLane(bondFrameData, seq, data, &laneIdx); writeErr != nil {
@@ -658,6 +713,9 @@ func (c *bondServerConn) copyBackendToBond(backendConn net.Conn) {
 			seq++
 		}
 		if err != nil {
+			if c.ctx.Err() == nil && err != io.EOF {
+				serverStats.recordBackendError("read")
+			}
 			lanes := c.snapshotLanes()
 			for _, lane := range lanes {
 				lane.mu.Lock()
@@ -779,6 +837,7 @@ func handleUDPConnection(ctx context.Context, conn net.Conn, connectAddr string)
 func handleLegacyUDPConnection(ctx context.Context, conn net.Conn, connectAddr string, firstPacket []byte) {
 	serverConn, err := net.Dial("udp", connectAddr)
 	if err != nil {
+		serverStats.recordBackendError("dial")
 		log.Println(err)
 		return
 	}
@@ -859,9 +918,11 @@ func handleLegacyUDPConnection(ctx context.Context, conn net.Conn, connectAddr s
 			written, err1 := serverConn.Write(packet)
 			stats.addTx(written)
 			if err1 != nil {
+				serverStats.recordBackendError("write")
 				log.Printf("Failed: %s", err1)
 				return
 			}
+			serverStats.packetsToBackend.Add(1)
 		}
 	}()
 	go func() {
@@ -880,6 +941,9 @@ func handleLegacyUDPConnection(ctx context.Context, conn net.Conn, connectAddr s
 			}
 			n, err1 := serverConn.Read(buf)
 			if err1 != nil {
+				if ctx2.Err() == nil {
+					serverStats.recordBackendError("read")
+				}
 				log.Printf("Failed: %s", err1)
 				return
 			}
@@ -894,6 +958,7 @@ func handleLegacyUDPConnection(ctx context.Context, conn net.Conn, connectAddr s
 				log.Printf("Failed: %s", err1)
 				return
 			}
+			serverStats.packetsFromBackend.Add(1)
 		}
 	}()
 	wg.Wait()
@@ -981,6 +1046,7 @@ func handleVLESSConnection(ctx context.Context, dtlsConn net.Conn, connectAddr s
 			// Connect to backend (Xray/VLESS)
 			backendConn, err := net.DialTimeout("tcp", connectAddr, 10*time.Second)
 			if err != nil {
+				serverStats.recordBackendError("dial")
 				log.Printf("backend dial error: %s", err)
 				return
 			}
