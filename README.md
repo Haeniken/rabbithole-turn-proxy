@@ -233,6 +233,24 @@ sudo systemctl status rabbithole-turn-proxy.service
 docker build -t rabbithole-turn-proxy .
 ```
 
+Для Compose скопируйте безопасный шаблон и задайте локальные значения в
+неотслеживаемом `.env`:
+
+```bash
+cp docker-compose.yml.example docker-compose.yml
+docker compose config -q
+docker compose up -d rabbithole-turn-proxy
+```
+
+Canary из того же файла запускается отдельно и слушает другой порт:
+
+```bash
+docker compose --profile canary up -d rabbithole-turn-proxy-canary
+```
+
+Если используется WRAP, задайте в `.env` `WRAP_MODE=true` и `WRAP_KEY`, не
+добавляя сам `.env` в репозиторий.
+
 Если backend слушает на хосте, удобнее использовать host network:
 
 ```bash

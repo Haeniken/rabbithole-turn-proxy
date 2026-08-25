@@ -1,0 +1,64 @@
+x-rabbithole-common: &rabbithole-common
+  build:
+    context: .
+  image: rabbithole-turn-proxy:local
+  restart: unless-stopped
+  network_mode: host
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  stop_grace_period: 40s
+  mem_limit: 256m
+  mem_reservation: 32m
+  memswap_limit: 384m
+  cpus: "1.25"
+  pids_limit: 256
+  ulimits:
+    nofile:
+      soft: 131072
+      hard: 131072
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  rabbithole-turn-proxy:
+    <<: *rabbithole-common
+    environment:
+      CONNECT_ADDR: ${CONNECT_ADDR:-127.0.0.1:51820}
+      LISTEN_ADDR: ${LISTEN_ADDR:-0.0.0.0:56000}
+      METRICS_LISTEN: ${METRICS_LISTEN:-127.0.0.1:9090}
+      INSTANCE_NAME: ${INSTANCE_NAME:-stable}
+      DRAIN_TIMEOUT: ${DRAIN_TIMEOUT:-30s}
+      MAX_SESSIONS: ${MAX_SESSIONS:-2048}
+      MAX_HANDSHAKES: ${MAX_HANDSHAKES:-128}
+      MAX_GOROUTINES: ${MAX_GOROUTINES:-20000}
+      MIN_FREE_FDS: ${MIN_FREE_FDS:-128}
+      WRAP_MODE: ${WRAP_MODE:-false}
+      WRAP_KEY: ${WRAP_KEY:-}
+
+  rabbithole-turn-proxy-canary:
+    <<: *rabbithole-common
+    profiles:
+      - canary
+    restart: "no"
+    environment:
+      CONNECT_ADDR: ${CONNECT_ADDR:-127.0.0.1:51820}
+      LISTEN_ADDR: ${CANARY_LISTEN_ADDR:-0.0.0.0:56001}
+      METRICS_LISTEN: ${CANARY_METRICS_LISTEN:-127.0.0.1:9091}
+      INSTANCE_NAME: ${CANARY_INSTANCE_NAME:-canary}
+      DRAIN_TIMEOUT: ${DRAIN_TIMEOUT:-30s}
+      MAX_SESSIONS: ${MAX_SESSIONS:-2048}
+      MAX_HANDSHAKES: ${MAX_HANDSHAKES:-128}
+      MAX_GOROUTINES: ${MAX_GOROUTINES:-20000}
+      MIN_FREE_FDS: ${MIN_FREE_FDS:-128}
+      CANARY_MODE: "true"
+      CANARY_MAX_SESSIONS: ${CANARY_MAX_SESSIONS:-32}
+      WRAP_MODE: ${WRAP_MODE:-false}
+      WRAP_KEY: ${WRAP_KEY:-}
