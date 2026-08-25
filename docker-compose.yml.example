@@ -40,8 +40,13 @@ services:
       MAX_HANDSHAKES: ${MAX_HANDSHAKES:-128}
       MAX_GOROUTINES: ${MAX_GOROUTINES:-20000}
       MIN_FREE_FDS: ${MIN_FREE_FDS:-128}
+      VLESS_MODE: ${VLESS_MODE:-false}
+      VLESS_BOND: ${VLESS_BOND:-false}
       WRAP_MODE: ${WRAP_MODE:-false}
       WRAP_KEY: ${WRAP_KEY:-}
+      DEBUG_MODE: ${DEBUG_MODE:-false}
+      VK_TURN_KCP_PROFILE: ${VK_TURN_KCP_PROFILE:-balanced}
+      VK_TURN_KCP_MTU: ${VK_TURN_KCP_MTU:-1200}
 
   rabbithole-turn-proxy-canary:
     <<: *rabbithole-common
@@ -60,5 +65,10 @@ services:
       MIN_FREE_FDS: ${MIN_FREE_FDS:-128}
       CANARY_MODE: "true"
       CANARY_MAX_SESSIONS: ${CANARY_MAX_SESSIONS:-32}
+      VLESS_MODE: ${VLESS_MODE:-false}
+      VLESS_BOND: ${VLESS_BOND:-false}
       WRAP_MODE: ${WRAP_MODE:-false}
       WRAP_KEY: ${WRAP_KEY:-}
+      DEBUG_MODE: ${DEBUG_MODE:-false}
+      VK_TURN_KCP_PROFILE: ${VK_TURN_KCP_PROFILE:-balanced}
+      VK_TURN_KCP_MTU: ${VK_TURN_KCP_MTU:-1200}
