@@ -238,9 +238,14 @@ docker build -t rabbithole-turn-proxy .
 
 ```bash
 cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env
 docker compose config -q
 docker compose up -d rabbithole-turn-proxy
 ```
+
+В `.env.example` перечислены все параметры Compose с безопасными значениями и
+русскими комментариями. Рабочий `.env` исключён из Git; секретный `WRAP_KEY`
+нельзя добавлять в коммиты, логи или снимки экрана.
 
 Canary из того же файла запускается отдельно и слушает другой порт:
 
