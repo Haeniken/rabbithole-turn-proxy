@@ -17,5 +17,6 @@ RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 
 EXPOSE 56000/tcp
 EXPOSE 56000/udp
+EXPOSE 9090/tcp
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
