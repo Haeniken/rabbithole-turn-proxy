@@ -399,14 +399,6 @@ docker run --rm --network host \
 Для более тонкой настройки доступны переменные: `VK_TURN_KCP_NODELAY`, `VK_TURN_KCP_INTERVAL`, `VK_TURN_KCP_RESEND`, `VK_TURN_KCP_NC`, `VK_TURN_KCP_SNDWND`, `VK_TURN_KCP_RCVWND`, `VK_TURN_KCP_ACK_NODELAY`.
 
 
-## Яндекс Телемост
-
-Поддержка `-yandex-link` оставлена в коде, но этот режим считается нестабильным и может не работать. Если используете его, обычно нужен `-udp` и ручной TURN IP:
-
-```bash
-./client -udp -turn 5.255.211.241 -listen 127.0.0.1:9000 -peer <ip-vps>:56000 -yandex-link "<telemost-link>"
-```
-
 ## Флаги клиента
 
 | Флаг | По умолчанию | Описание |
@@ -414,8 +406,7 @@ docker run --rm --network host \
 | `-listen` | `127.0.0.1:9000` | локальный адрес для WireGuard или Xray клиента |
 | `-peer` | обязательный | адрес Rabbit Hole TURN Proxy server на VPS, например `<ip-vps>:56000` |
 | `-vk-link` | пусто | ссылка VK Calls |
-| `-yandex-link` | пусто | ссылка Яндекс Телемоста, legacy-режим |
-| `-n` | VK: `10`, Yandex: `1` | количество TURN-соединений |
+| `-n` | `10` | количество TURN-соединений |
 | `-udp` | `false` | подключаться к TURN-реле по UDP вместо TCP |
 | `-turn` | из ссылки | переопределить IP TURN-сервера |
 | `-port` | из ссылки | переопределить порт TURN-сервера |
@@ -431,7 +422,7 @@ docker run --rm --network host \
 | `-debug` | `false` | подробные логи |
 | `-no-dtls` | `false` | прямой режим без DTLS, не рекомендуется |
 
-Нужно указать ровно одну ссылку: `-vk-link` или `-yandex-link`.
+Нужно указать ссылку VK Calls через `-vk-link`.
 
 ## Флаги сервера
 
@@ -500,7 +491,6 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o cli
 Server:
 
 - https://github.com/Urtyom-Alyanov/turn-proxy - реализация на Rust.
-- https://github.com/jaykaiperson/lionheart - похожий подход для `stream.wb.ru`.
 - https://github.com/kulikov0/whitelist-bypass - проброс через медиасерверы.
 - https://github.com/NedgNDG/vk-proxy-auto-installer - автоустановщик VK TURN Proxy.
 - https://github.com/defin85/vk-turn-proxy-go
