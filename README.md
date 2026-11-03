@@ -458,7 +458,7 @@ docker run --rm --network host \
 
 ## Сборка из исходников
 
-Нужен Go 1.25.x.
+Нужен Go 1.27.x.
 
 ```bash
 go build -o client ./client

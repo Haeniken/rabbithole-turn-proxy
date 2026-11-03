@@ -18,7 +18,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"net/http"
 	neturl "net/url"
 	"strconv"
 	"strings"
@@ -37,7 +36,7 @@ import (
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/logging"
-	"github.com/pion/transport/v4"
+	"github.com/pion/transport/v5"
 	"github.com/pion/turn/v5"
 	"github.com/xtaci/smux"
 )
@@ -311,16 +310,6 @@ func (l directTCPListener) AcceptTCP() (transport.TCPConn, error) {
 }
 
 // region Helper: HTTP Headers Injection
-
-// applyBrowserProfile applies consistent User-Agent and Client Hints to bypass WAFs
-func applyBrowserProfile(req *http.Request, profile Profile) {
-	req.Header.Set("User-Agent", profile.UserAgent)
-	req.Header.Set("sec-ch-ua", profile.SecChUa)
-	req.Header.Set("sec-ch-ua-mobile", profile.SecChUaMobile)
-	req.Header.Set("sec-ch-ua-platform", profile.SecChUaPlatform)
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("DNT", "1")
-}
 
 func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 	req.Header.Set("User-Agent", profile.UserAgent)
